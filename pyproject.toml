@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wagentdb"
+version = "0.1.0"
+description = "An open-source, agent-native experiment tracker (a wandb for AI agents) backed by Cloudflare R2 + SQLite."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "tensorlink-dev" }]
+keywords = ["experiment-tracking", "mlops", "agents", "wandb", "cloudflare-r2", "sqlite"]
+dependencies = [
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+r2 = ["boto3>=1.28"]
+server = ["fastapi>=0.110", "uvicorn>=0.23"]
+client = ["httpx>=0.24"]
+transformers = ["transformers>=4.0"]
+all = ["boto3>=1.28", "fastapi>=0.110", "uvicorn>=0.23", "httpx>=0.24"]
+dev = ["boto3>=1.28", "fastapi>=0.110", "uvicorn>=0.23", "httpx>=0.24", "pytest>=7"]
+
+[project.scripts]
+wagentdb = "wagentdb.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["wagentdb*"]
+
+[tool.setuptools.package-data]
+wagentdb = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
