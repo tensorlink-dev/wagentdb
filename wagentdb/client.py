@@ -28,11 +28,16 @@ Reviewing (what an agent does afterwards)::
 
 from __future__ import annotations
 
+import os
+import tarfile
+import tempfile
 from typing import Any, Dict, List, Optional, Union
 
 from . import models as m
 from .config import Settings
 from .store import Store
+from .sysinfo import collect_git_info, collect_system_info
+from .utils import flatten_numeric
 
 
 # ====================================================================== backends
@@ -107,13 +112,21 @@ class Run:
         return f"<Run {self._run.id} name={self._run.name!r} status={self._run.status}>"
 
     # ---- logging ----
-    def log(self, metrics: Dict[str, float], step: Optional[int] = None) -> None:
-        """Log a dict of scalar metrics at an optional step."""
+    def log(self, metrics: Dict[str, Any], step: Optional[int] = None) -> None:
+        """Log a dict of metrics at an optional step.
+
+        Nested dicts are flattened (``{"eval": {"loss": x}}`` -> ``eval/loss``)
+        and non-numeric / NaN values are dropped, so you can pass a framework's
+        raw log dict (e.g. HF ``transformers`` ``on_log`` payloads) directly.
+        """
+        flat = dict(flatten_numeric(metrics))
+        if not flat:
+            return
         if isinstance(self._backend, _EmbeddedBackend):
-            self._backend.store.log_metrics(self.id, metrics, step=step)
+            self._backend.store.log_metrics(self.id, flat, step=step)
         else:
             self._backend.json("POST", f"/runs/{self.id}/metrics",
-                               json={"metrics": metrics, "step": step})
+                               json={"metrics": flat, "step": step})
 
     def log_text(self, message: str, level: str = "info", step: Optional[int] = None) -> None:
         if isinstance(self._backend, _EmbeddedBackend):
@@ -129,16 +142,55 @@ class Run:
         type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> m.Artifact:
+        """Store an artifact: raw bytes, a file path, or a directory.
+
+        - **bytes** are uploaded as-is.
+        - a **file path** is streamed (multipart on R2) — fine for large
+          checkpoints.
+        - a **directory** (e.g. a HF ``save_pretrained`` output) is archived to
+          a single ``.tar.gz`` and streamed.
+        """
+        # In-memory bytes.
         if isinstance(path_or_bytes, (bytes, bytearray)):
             data = bytes(path_or_bytes)
             name = name or "artifact.bin"
-        else:
-            import os
-            with open(path_or_bytes, "rb") as fh:
-                data = fh.read()
-            name = name or os.path.basename(path_or_bytes)
+            if isinstance(self._backend, _EmbeddedBackend):
+                return self._backend.store.log_artifact(self.id, name, data,
+                                                        type=type, metadata=metadata)
+            return self._upload_bytes(name, data, type)
+
+        path = str(path_or_bytes)
+        is_dir = os.path.isdir(path)
+
+        # Embedded mode streams straight through the store.
         if isinstance(self._backend, _EmbeddedBackend):
-            return self._backend.store.log_artifact(self.id, name, data, type=type, metadata=metadata)
+            if is_dir:
+                return self._backend.store.log_artifact_dir(self.id, path, name=name,
+                                                            type=type, metadata=metadata)
+            return self._backend.store.log_artifact_file(self.id, path, name=name,
+                                                         type=type, metadata=metadata)
+
+        # HTTP mode: read (or archive) then post the bytes.
+        if is_dir:
+            base = name or (os.path.basename(os.path.normpath(path)) + ".tar.gz")
+            if not base.endswith((".tar.gz", ".tgz")):
+                base += ".tar.gz"
+            with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+                tmp_path = tmp.name
+            try:
+                with tarfile.open(tmp_path, "w:gz") as tar:
+                    tar.add(path, arcname=os.path.basename(os.path.normpath(path)))
+                with open(tmp_path, "rb") as fh:
+                    data = fh.read()
+            finally:
+                os.unlink(tmp_path)
+            return self._upload_bytes(base, data, type)
+
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return self._upload_bytes(name or os.path.basename(path), data, type)
+
+    def _upload_bytes(self, name: str, data: bytes, type: Optional[str]) -> m.Artifact:
         params = {"name": name}
         if type:
             params["type"] = type
@@ -273,11 +325,28 @@ def init(
     store: Optional[Store] = None,
     http_client: Any = None,
     fork_from: Optional[str] = None,
+    system: Optional[Dict[str, Any]] = None,
+    git_commit: Optional[str] = None,
+    git_remote: Optional[str] = None,
+    capture_env: bool = True,
 ) -> Run:
-    """Start a run. Returns a :class:`Run` handle. Mirrors ``wandb.init``."""
+    """Start a run. Returns a :class:`Run` handle. Mirrors ``wandb.init``.
+
+    By default the run records environment info (python/torch/CUDA/GPU and the
+    versions of common training libs) and git commit/remote, so experiments are
+    reproducible regardless of which framework produced them. Pass
+    ``capture_env=False`` to skip it.
+    """
     backend = _make_backend(url, settings, store, token, http_client)
+    if capture_env:
+        if system is None:
+            system = collect_system_info()
+        git = collect_git_info()
+        git_commit = git_commit or git.get("commit")
+        git_remote = git_remote or git.get("remote")
     create = m.RunCreate(project=project, name=name, experiment=experiment,
-                         config=config, tags=tags, notes=notes, created_by=created_by)
+                         config=config, tags=tags, notes=notes, created_by=created_by,
+                         system=system, git_commit=git_commit, git_remote=git_remote)
     if isinstance(backend, _EmbeddedBackend):
         run_model = backend.store.create_run(create)
     else:

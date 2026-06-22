@@ -94,6 +94,16 @@ class LocalObjectStore(ObjectStore):
                     out.append(rel)
         return sorted(out)
 
+    def put_file(self, key: str, path: str, content_type: Optional[str] = None) -> None:
+        dst = self._path(key)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, dst)
+
+    def get_file(self, key: str, path: str) -> None:
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self._path(key), dest)
+
     def presigned_url(self, key: str, expires: int = 3600) -> Optional[str]:
         p = self._path(key)
         return p.as_uri() if p.exists() else None
@@ -150,6 +160,16 @@ class R2ObjectStore(ObjectStore):
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
+
+    def put_file(self, key: str, path: str, content_type: Optional[str] = None) -> None:
+        # boto3 upload_file streams and multiparts large files automatically.
+        extra = {"ContentType": content_type} if content_type else None
+        self.client.upload_file(path, self.bucket, key, ExtraArgs=extra)
+
+    def get_file(self, key: str, path: str) -> None:
+        dest = Path(path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self.client.download_file(self.bucket, key, str(dest))
 
     def list(self, prefix: str = "") -> List[str]:
         keys: List[str] = []

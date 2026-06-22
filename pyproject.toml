@@ -19,6 +19,7 @@ dependencies = [
 r2 = ["boto3>=1.28"]
 server = ["fastapi>=0.110", "uvicorn>=0.23"]
 client = ["httpx>=0.24"]
+transformers = ["transformers>=4.0"]
 all = ["boto3>=1.28", "fastapi>=0.110", "uvicorn>=0.23", "httpx>=0.24"]
 dev = ["boto3>=1.28", "fastapi>=0.110", "uvicorn>=0.23", "httpx>=0.24", "pytest>=7"]
 

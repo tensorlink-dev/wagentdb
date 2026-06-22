@@ -121,6 +121,58 @@ run = wagentdb.init(project="p", config={...}, url="https://wagentdb.internal")
 
 ---
 
+## Works with any training stack
+
+wagentdb is framework-agnostic by design — metrics are just dicts and the core
+depends on none of these libraries. The pieces that make it slot into whatever
+you're training (HF `transformers`, plain PyTorch loops, RL, JAX, ...):
+
+- **Flexible `log()`** — pass a framework's raw log dict. Nested dicts are
+  flattened (`{"eval": {"loss": x}}` → `eval/loss`) and non-numeric / NaN values
+  are dropped, so `run.log(hf_logs, step=...)` just works.
+- **Auto env + git capture** — each run records python/torch/CUDA/GPU and the
+  versions of common libs (`transformers`, `datasets`, `accelerate`, `peft`,
+  `trl`, `lightning`, `jax`, ...) plus the git commit/remote. Disable with
+  `capture_env=False`.
+- **Streaming artifacts for LLM-scale checkpoints** — `run.log_artifact(path)`
+  streams a file (multipart on R2); pass a **directory** (e.g. a
+  `save_pretrained` output) and it's archived to a single `.tar.gz` and
+  streamed — checkpoints never get read fully into memory.
+
+### HuggingFace `transformers`
+
+A drop-in callback, the wagentdb equivalent of `WandbCallback`:
+
+```python
+from transformers import Trainer
+from wagentdb.integrations.transformers import WagentDBCallback
+
+trainer = Trainer(
+    model=model, args=training_args, ...,
+    callbacks=[WagentDBCallback(project="llm-sft", name="qwen-lora",
+                                tags=["lora"], log_model=True)],
+)
+trainer.train()
+```
+
+It captures `TrainingArguments` + the model config, logs every metric the
+Trainer emits, optionally uploads checkpoints (`log_checkpoints=True`) and the
+final model (`log_model=True`), and finishes the run. Pass `run=` an existing
+run to attach instead of creating one. Works the same for causal LMs, seq2seq,
+classifiers, etc. — it forwards whatever the Trainer logs.
+
+### Plain training loops
+
+No integration needed — the `wandb`-style client covers any loop:
+
+```python
+run = wagentdb.init(project="rl-cartpole", config={"algo": "ppo", "lr": 3e-4})
+for episode in range(n):
+    run.log({"reward": r, "loss/policy": pl, "loss/value": vl}, step=episode)
+run.log_artifact("policy.pt", type="model")
+run.finish()
+```
+
 ## Run the server
 
 ```bash

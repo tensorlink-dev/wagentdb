@@ -8,13 +8,16 @@ pydantic models.
 
 from __future__ import annotations
 
+import os
+import tarfile
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from . import models as m
 from .config import Settings
 from .database import Database
 from .objectstore import ObjectStore, build_object_store
-from .utils import dumps, loads, new_id, sha256_bytes, utcnow
+from .utils import dumps, loads, new_id, sha256_bytes, sha256_file, utcnow
 
 # Relations that describe how a run descends from / depends on another node.
 LINEAGE_RELATIONS = {
@@ -310,6 +313,57 @@ class Store:
             (aid, run_id, name, type, key, len(data), sha256_bytes(data), dumps(metadata), utcnow()),
         )
         return _artifact(self.db.query_one("SELECT * FROM artifacts WHERE id = ?", (aid,)))
+
+    def log_artifact_file(
+        self,
+        run_id: str,
+        path: str,
+        name: Optional[str] = None,
+        type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> m.Artifact:
+        """Stream a file to the object store (no full read into memory).
+
+        Suitable for large model checkpoints. On R2 this uses multipart upload.
+        """
+        self.get_run(run_id)
+        name = name or os.path.basename(path)
+        aid = new_id("art")
+        key = f"artifacts/{run_id}/{aid}/{name}"
+        checksum, size = sha256_file(path)
+        self.object_store.put_file(key, path)
+        self.db.write(
+            "INSERT INTO artifacts(id, run_id, name, type, storage_key, size_bytes, checksum, metadata, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (aid, run_id, name, type, key, size, checksum, dumps(metadata), utcnow()),
+        )
+        return _artifact(self.db.query_one("SELECT * FROM artifacts WHERE id = ?", (aid,)))
+
+    def log_artifact_dir(
+        self,
+        run_id: str,
+        path: str,
+        name: Optional[str] = None,
+        type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> m.Artifact:
+        """Archive a directory (e.g. a HF ``save_pretrained`` checkpoint) as a
+        single ``.tar.gz`` artifact and stream it to the object store."""
+        self.get_run(run_id)
+        base = name or (os.path.basename(os.path.normpath(path)) + ".tar.gz")
+        if not base.endswith((".tar.gz", ".tgz")):
+            base += ".tar.gz"
+        meta = dict(metadata or {})
+        meta.setdefault("archive", "tar.gz")
+        meta.setdefault("source_dir", os.path.basename(os.path.normpath(path)))
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            with tarfile.open(tmp_path, "w:gz") as tar:
+                tar.add(path, arcname=os.path.basename(os.path.normpath(path)))
+            return self.log_artifact_file(run_id, tmp_path, name=base, type=type, metadata=meta)
+        finally:
+            os.unlink(tmp_path)
 
     def list_artifacts(self, run_id: str) -> List[m.Artifact]:
         rows = self.db.query_all(
