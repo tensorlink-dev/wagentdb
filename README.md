@@ -247,6 +247,14 @@ python examples/log_run.py
 python examples/review_agent.py
 ```
 
+## Agent skill
+
+[`.claude/skills/wagentdb/SKILL.md`](.claude/skills/wagentdb/SKILL.md) is a
+Claude Code skill that teaches an agent how to log, link, and review experiments
+with wagentdb. It's available automatically in sessions in this repo; copy the
+`.claude/skills/wagentdb/` directory into your training repos (e.g. `dynaprior`,
+`SSM-DS`) so agents there know how to use it too.
+
 ## Tests
 
 ```bash
